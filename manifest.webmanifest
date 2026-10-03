@@ -1,0 +1,26 @@
+{
+  "id": "./",
+  "name": "EchoSpan — Reverse Digit Practice",
+  "short_name": "EchoSpan",
+  "description": "Listen. Remember. Reverse. Private reverse digit practice.",
+  "lang": "en",
+  "start_url": "./echospan.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f2f6fc",
+  "theme_color": "#245da8",
+  "icons": [
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
