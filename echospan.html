@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="th">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -67,7 +67,7 @@
   <header><h1>EchoSpan</h1><p>Listen. Remember. Reverse.</p></header>
   <section class="card" aria-labelledby="trial-title">
     <p class="eyebrow" id="mode-display">Reverse digit practice</p>
-    <p class="length" id="length-display">Length: 4 digits</p>
+    <p class="length" id="length-display">Length: 3 digits</p>
     <h2 id="trial-title" tabindex="-1">Ready to listen?</h2>
     <p id="instruction">Listen to the numbers. Then enter them in reverse order.</p>
     <button class="primary" id="start" type="button">Start</button>
@@ -90,14 +90,14 @@
   <div class="secondary">
     <details id="settings"><summary>Settings</summary>
       <fieldset id="settings-fields"><legend class="eyebrow">For your next trial</legend>
-        <label><span>Language / ภาษา</span><select id="language"><option value="en" lang="en">English</option><option value="th" lang="th">ไทย</option></select></label>
+        <label><span>Language / ภาษา</span><select id="language"><option value="en" lang="en">English</option><option value="th" lang="th" selected>ไทย</option></select></label>
         <label><span>Voice</span><select id="voice"><option value="female" selected>Female</option><option value="male">Male</option></select></label>
-        <label><span>Sequence length</span><select id="length"><option>3</option><option selected>4</option><option>5</option><option>6</option><option>7</option><option>8</option><option>9</option><option>10</option></select></label>
+        <label><span>Sequence length</span><select id="length"><option selected>3</option><option>4</option><option>5</option><option>6</option><option>7</option><option>8</option><option>9</option><option>10</option></select></label>
         <label><span>Adaptive mode</span><select id="adaptive"><option value="off">Off</option><option value="on">On</option></select></label>
         <label><span>Pause between digits</span><select id="pause"><option value="0">0 ms</option><option value="100">100 ms</option><option value="250">250 ms</option><option value="400" selected>400 ms</option><option value="500">500 ms</option><option value="700">700 ms</option><option value="1000">1000 ms</option><option value="1500">1500 ms</option></select></label>
-        <label><span>Speech rate</span><select id="rate"><option>0.5</option><option>0.7</option><option selected>0.8</option><option>0.9</option><option>1.0</option><option>1.2</option><option>1.5</option></select></label>
+        <label><span>Speech rate</span><select id="rate"><option>0.5</option><option>0.7</option><option>0.8</option><option>0.9</option><option selected>1.0</option><option>1.2</option><option>1.5</option></select></label>
         <label><span>Mode</span><select id="mode"><option value="reverse" selected>Reverse</option><option value="forward">Forward</option></select></label>
-        <label><span>Continuous play</span><select id="continuous"><option value="off">Off</option><option value="on">On</option></select></label>
+        <label><span>Continuous play</span><select id="continuous"><option value="off">Off</option><option value="on" selected>On</option></select></label>
         <p class="setting-note">Continuous play counts down 3 seconds before the first round and between rounds. Check your answer when ready; you can stop the countdown.</p>
         <label><span>Allow one repeat</span><select id="allow-repeat"><option value="off">Off</option><option value="on">On</option></select></label>
         <p class="setting-note">Adaptive mode changes length after two correct or two incorrect answers in a row. You can always choose a length between trials.</p>
@@ -105,7 +105,7 @@
     </details>
     <details><summary>This session</summary><dl>
       <div><dt>Trials</dt><dd id="stat-trials">0</dd></div><div><dt>Correct</dt><dd id="stat-correct">0</dd></div><div><dt>Incorrect</dt><dd id="stat-incorrect">0</dd></div>
-      <div><dt>Accuracy</dt><dd id="stat-accuracy">0%</dd></div><div><dt>Current length</dt><dd id="stat-length">4</dd></div><div><dt>Best length</dt><dd id="stat-best">—</dd></div>
+      <div><dt>Accuracy</dt><dd id="stat-accuracy">0%</dd></div><div><dt>Current length</dt><dd id="stat-length">3</dd></div><div><dt>Best length</dt><dd id="stat-best">—</dd></div>
     </dl></details>
   </div>
   <footer><p>A practice exercise, not a diagnostic test.</p><p>No account. No tracking. Session results stay in this tab.</p><p id="offline-status">Offline availability will be checked when the page loads.</p></footer>
@@ -114,7 +114,7 @@
 (() => {
   'use strict';
   const $ = id => document.getElementById(id);
-  let language = 'en';
+  let language = $('language').value;
   let offlineMessage = 'Offline availability will be checked when the page loads.';
   const thai = {
     "Voice": "เสียงอ่าน",
@@ -287,7 +287,7 @@
   const canPlayLanguage = () => !!audioPlayer;
   const State = Object.freeze({ READY: 'READY', SPEAKING: 'SPEAKING', INPUT: 'INPUT', RESULT: 'RESULT' });
   let state = State.READY;
-  let sequence = [], activeLength = 4, activeIndex = 0, repeatUsed = false;
+  let sequence = [], activeLength = 3, activeIndex = 0, repeatUsed = false;
   let settings = {}, runId = 0, pendingSpeech = null;
   let consecutiveCorrect = 0, consecutiveIncorrect = 0;
   let countdownTimer = null;
@@ -632,7 +632,8 @@
     translateInterface();
     resetTrial(canPlayLanguage() ? '' : 'Audio playback is not available in this browser.');
   });
-  if (!canPlayLanguage()) resetTrial('Audio playback is not available in this browser.');
+  translateInterface();
+  resetTrial(canPlayLanguage() ? '' : 'Audio playback is not available in this browser.');
   updateStatistics();
 
   if ('serviceWorker' in navigator && window.isSecureContext) {
