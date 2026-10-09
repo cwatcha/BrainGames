@@ -282,6 +282,8 @@
   // Keys match the Speech rate options; 0.8 holds the unmodified recordings.
   const REFERENCE_RATE = '0.8';
   const speedKey = rate => Number(rate).toFixed(1);
+  const FINAL_PAUSE = 350; // Silence after the last digit, before input opens.
+  const SILENT_WAV = "data:audio/wav;base64,UklGRkQDAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YSADAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
   // BEGIN EMBEDDED ENGLISH_MALE AUDIO
   const ENGLISH_MALE_AUDIO = freezeSpeedSets({
       "0.5": [
@@ -731,6 +733,7 @@
       audioPlayer.pause();
       audioPlayer.removeAttribute('src');
       audioPlayer.load();
+      releaseRoundUrl();
     }
   }
   function resetTrial(message = '') {
@@ -743,6 +746,121 @@
     $('instruction').textContent = modeText('Listen to the numbers. Then enter them in reverse order.', 'Listen to the numbers. Then enter them in the same order.');
     updateModeLabels();
     $('message').textContent = t(message);
+  }
+  // One media source per round. Loading a source costs about 70 ms on desktop but
+  // about 440 ms on iOS, and the game used to pay that for every digit, which made
+  // an iPhone round roughly 38% longer than Windows. The digits and the exact
+  // inter-digit silences are assembled into a single clip instead, so the cost is
+  // paid once and the pauses are sample-accurate on every platform.
+  const CLIP_SAMPLE_RATE = 24000;
+  let decodeContext = null, decodeContextReady = false, roundUrl = null;
+  function getDecodeContext() {
+    // Used only to decode the embedded MP3s. It is never started, so the audio
+    // element keeps its own routing and permission behaviour.
+    if (decodeContextReady) return decodeContext;
+    decodeContextReady = true;
+    const Context = window.AudioContext || window.webkitAudioContext;
+    if (!Context) return null;
+    for (const options of [{ sampleRate: CLIP_SAMPLE_RATE }, undefined]) {
+      try { decodeContext = new Context(options); break; } catch { decodeContext = null; }
+    }
+    return decodeContext;
+  }
+  function clipBytes(dataUrl) {
+    const binary = atob(dataUrl.slice(dataUrl.indexOf(',') + 1));
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes.buffer;
+  }
+  function decodeClip(context, dataUrl) {
+    return new Promise((resolve, reject) => {
+      // Older WebKit only offers the callback form.
+      const pending = context.decodeAudioData(clipBytes(dataUrl), resolve, reject);
+      if (pending && typeof pending.then === 'function') pending.then(resolve, reject);
+    });
+  }
+  function encodeWav(samples, sampleRate) {
+    const buffer = new ArrayBuffer(44 + samples.length * 2);
+    const view = new DataView(buffer);
+    const ascii = (offset, value) => { for (let i = 0; i < value.length; i++) view.setUint8(offset + i, value.charCodeAt(i)); };
+    ascii(0, 'RIFF'); view.setUint32(4, 36 + samples.length * 2, true); ascii(8, 'WAVEfmt ');
+    view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+    view.setUint32(24, sampleRate, true); view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+    ascii(36, 'data'); view.setUint32(40, samples.length * 2, true);
+    for (let i = 0; i < samples.length; i++) {
+      const sample = Math.max(-1, Math.min(1, samples[i]));
+      view.setInt16(44 + i * 2, Math.round(sample < 0 ? sample * 0x8000 : sample * 0x7fff), true);
+    }
+    return new Blob([buffer], { type: 'audio/wav' });
+  }
+  async function buildRound(digits, clips, pauseMs, tailMs) {
+    const context = getDecodeContext();
+    if (!context) return null;
+    const decoded = [];
+    // Decoded in sequence order; a round is ten short clips at most.
+    for (const digit of digits) decoded.push(await decodeClip(context, clips[digit]));
+    const sampleRate = decoded[0].sampleRate;
+    const gap = Math.round(pauseMs / 1000 * sampleRate);
+    const tail = Math.round(tailMs / 1000 * sampleRate);
+    const length = decoded.reduce((total, buffer) => total + buffer.length, 0) + gap * (decoded.length - 1) + tail;
+    const samples = new Float32Array(length);
+    let at = 0;
+    for (let index = 0; index < decoded.length; index++) {
+      samples.set(decoded[index].getChannelData(0), at);
+      at += decoded[index].length + (index < decoded.length - 1 ? gap : 0);
+    }
+    return { blob: encodeWav(samples, sampleRate), seconds: length / sampleRate };
+  }
+  function playRound(round) {
+    return new Promise((resolve, reject) => {
+      let finished = false;
+      const finish = error => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(watchdog);
+        audioPlayer.onended = null;
+        audioPlayer.onerror = null;
+        audioPlayer.onloadedmetadata = null;
+        audioPlayer.oncanplay = null;
+        audioPlayer.onplaying = null;
+        pendingSpeech = null;
+        if (error) reject(error); else resolve();
+      };
+      const watchdog = setTimeout(() => finish(new Error('Audio did not finish.')), round.seconds * 1000 + 12000);
+      pendingSpeech = finish;
+      audioPlayer.onended = () => { if (audioPlayer.ended) finish(); };
+      audioPlayer.onerror = () => finish(new Error('Audio could not play.'));
+      const holdRate = () => {
+        if (finished) return;
+        try {
+          if (audioPlayer.defaultPlaybackRate !== 1) audioPlayer.defaultPlaybackRate = 1;
+          if (audioPlayer.playbackRate !== 1) audioPlayer.playbackRate = 1;
+        } catch (error) { finish(error); }
+      };
+      audioPlayer.onloadedmetadata = holdRate;
+      audioPlayer.oncanplay = holdRate;
+      audioPlayer.onplaying = holdRate;
+      try {
+        holdRate();
+        releaseRoundUrl();
+        roundUrl = URL.createObjectURL(round.blob);
+        audioPlayer.src = roundUrl;
+        holdRate();
+        if (!finished) audioPlayer.play().catch(finish);
+      } catch (error) { finish(error); }
+    });
+  }
+  function releaseRoundUrl() {
+    if (!roundUrl) return;
+    URL.revokeObjectURL(roundUrl);
+    roundUrl = null;
+  }
+  function clipsForSettings() {
+    const sets = language === 'th'
+      ? (settings.voice === 'male' ? THAI_MALE_AUDIO : THAI_AUDIO)
+      : (settings.voice === 'male' ? ENGLISH_MALE_AUDIO : ENGLISH_AUDIO);
+    return sets[speedKey(settings.rate)] || sets[REFERENCE_RATE];
   }
   function speakDigit(digit) {
     return new Promise((resolve, reject) => {
@@ -777,10 +895,7 @@
       audioPlayer.oncanplay = applyPlaybackRate;
       audioPlayer.onplaying = applyPlaybackRate;
       try {
-        const sets = language === 'th'
-          ? (settings.voice === 'male' ? THAI_MALE_AUDIO : THAI_AUDIO)
-          : (settings.voice === 'male' ? ENGLISH_MALE_AUDIO : ENGLISH_AUDIO);
-        const clips = sets[speedKey(settings.rate)] || sets[REFERENCE_RATE];
+        const clips = clipsForSettings();
         // Set the reset rate before swapping sources, then restore the live rate.
         applyPlaybackRate();
         if (finished) return;
@@ -798,11 +913,22 @@
     $('instruction').textContent = t('Keep the numbers in mind. Wait until the keypad appears.');
     $('message').textContent = t('Listen carefully. The numbers will be spoken.');
     try {
-      for (let index = 0; index < sequence.length; index++) {
+      const clips = clipsForSettings();
+      let round = null;
+      // Falling back to one source per digit keeps the game usable where the
+      // round cannot be assembled; the pacing is then the browser's.
+      try { round = await buildRound(sequence, clips, settings.pause, FINAL_PAUSE); } catch { round = null; }
+      if (thisRun !== runId) return;
+      if (round) {
+        await playRound(round);
         if (thisRun !== runId) return;
-        await speakDigit(sequence[index]);
-        if (thisRun !== runId) return;
-        await delay(index === sequence.length - 1 ? 350 : settings.pause);
+      } else {
+        for (let index = 0; index < sequence.length; index++) {
+          if (thisRun !== runId) return;
+          await speakDigit(sequence[index]);
+          if (thisRun !== runId) return;
+          await delay(index === sequence.length - 1 ? FINAL_PAUSE : settings.pause);
+        }
       }
       if (thisRun === runId) enableAnswerInput();
     } catch {
@@ -822,7 +948,7 @@
     window.scrollTo(0, 0);
     updateModeLabels();
     renderAnswerBoxes(activeLength);
-    // Continuous sessions have already primed audio in the initial click handler.
+    // Audio was already primed by the Start/Next round tap in every mode.
     speakSequence();
   }
   function markCurrent() { boxes().forEach((box, i) => box.classList.toggle('current', i === activeIndex)); }
@@ -915,19 +1041,22 @@
   }
   function requestTrial() {
     if (countdownTimer !== null || (state !== State.READY && state !== State.RESULT) || !canPlayLanguage()) return;
-    if ($('continuous').value !== 'on') { startTrial(); return; }
+    const continuous = $('continuous').value === 'on';
     cancelSpeech();
     setState(State.READY);
-    beginCountdown(true);
+    if (continuous) beginCountdown(true);
     const preparationRun = runId;
     const failed = () => {
       if (preparationRun === runId && countdownTimer !== null) resetTrial('Speech was interrupted or could not play. Check the volume, then tap Start to retry with new numbers.');
     };
-    // Prime the same playback engine during the tap; no digit is revealed before countdown ends.
+    // Prime the same playback engine during the tap. Assembling a round is
+    // asynchronous, so every mode needs the player unlocked by the gesture
+    // itself; no digit is revealed before any countdown ends.
     try {
-        audioPlayer.src = "data:audio/wav;base64,UklGRkQDAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YSADAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
+        audioPlayer.src = SILENT_WAV;
         audioPlayer.play().catch(failed);
     } catch { failed(); }
+    if (!continuous) startTrial();
   }
   $('start').addEventListener('click', requestTrial);
   $('stop').addEventListener('click', () => {
